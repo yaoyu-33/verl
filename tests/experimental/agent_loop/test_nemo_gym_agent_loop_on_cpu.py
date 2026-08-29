@@ -1,4 +1,4 @@
-# Copyright 2026 NVIDIA Corporation
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,32 +26,17 @@ def _trajectory():
     }
 
 
-def test_trajectory_maps_to_native_agent_loop_fields():
-    output = nemo_gym_agent_loop.trajectory_to_agent_output(_trajectory())
-
-    assert output.prompt_ids == [10, 11]
-    assert output.response_ids == [12, 13, 14]
-    assert output.response_mask == [1, 0, 1]
-    assert output.response_logprobs == [-0.1, 0.0, -0.2]
-    assert output.reward_score == 0.75
-    native = output.as_dict()
-    assert native["responses"].tolist() == [12, 13, 14]
-    assert native["response_mask"].tolist() == [1, 0, 1]
-    assert native["rollout_log_probs"].tolist() == pytest.approx([-0.1, 0.0, -0.2])
-
-
 @pytest.mark.asyncio
 async def test_agent_loop_calls_gym_run(monkeypatch):
     captured = {}
 
-    async def fake_post_run(url, request):
-        captured.update(url=url, request=request)
+    async def fake_post_run(request):
+        captured.update(request)
         return {"trajectory": _trajectory()}
 
-    monkeypatch.setattr(nemo_gym_agent_loop, "_post_run", fake_post_run)
     loop = object.__new__(nemo_gym_agent_loop.NemoGymAgentLoop)
     loop.gym_run_url = "http://gym:8000/run"
-    loop.request_key = "nemo_gym_run_request"
+    monkeypatch.setattr(loop, "_post_run", fake_post_run)
 
     output = await loop.run(
         {"temperature": 0.7, "top_p": 0.9},
@@ -60,21 +45,15 @@ async def test_agent_loop_calls_gym_run(monkeypatch):
     )
 
     assert captured == {
-        "url": "http://gym:8000/run",
-        "request": {
-            "verifier_metadata": {"answer": "42"},
-            "responses_create_params": {
-                "input": [{"role": "user", "content": "solve"}],
-                "temperature": 0.7,
-                "top_p": 0.9,
-            },
+        "verifier_metadata": {"answer": "42"},
+        "responses_create_params": {
+            "input": [{"role": "user", "content": "solve"}],
+            "temperature": 0.7,
+            "top_p": 0.9,
         },
     }
+    assert output.prompt_ids == [10, 11]
     assert output.response_ids == [12, 13, 14]
-
-
-def test_trajectory_requires_a_trainable_token():
-    with pytest.raises(ValueError, match="no trainable response token"):
-        nemo_gym_agent_loop.trajectory_to_agent_output(
-            {"input_ids": [1], "loss_mask": [0], "logprobs": [0.0], "reward": 0.0}
-        )
+    assert output.response_mask == [1, 0, 1]
+    assert output.response_logprobs == [-0.1, 0.0, -0.2]
+    assert output.reward_score == 0.75

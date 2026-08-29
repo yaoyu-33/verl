@@ -1,4 +1,4 @@
-# Copyright 2026 NVIDIA Corporation
+# Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # limitations under the License.
 """NeMo Gym agent loop backed by Gym's token-aligned ``/run`` result."""
 
-from copy import deepcopy
 from typing import Any
 
 import aiohttp
@@ -21,59 +20,38 @@ import aiohttp
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopMetrics, AgentLoopOutput
 
 
-def trajectory_to_agent_output(trajectory: dict[str, Any]) -> AgentLoopOutput:
-    """Project Gym's four fields into verl's existing agent-loop contract."""
-    input_ids = list(trajectory["input_ids"])
-    loss_mask = list(trajectory["loss_mask"])
-    logprobs = list(trajectory["logprobs"])
-    if not input_ids or len(input_ids) != len(loss_mask) or len(input_ids) != len(logprobs):
-        raise ValueError("NeMo Gym trajectory fields must be non-empty and token-aligned")
-    try:
-        response_start = loss_mask.index(1)
-    except ValueError as error:
-        raise ValueError("NeMo Gym trajectory has no trainable response token") from error
-
-    return AgentLoopOutput(
-        prompt_ids=input_ids[:response_start],
-        response_ids=input_ids[response_start:],
-        response_mask=loss_mask[response_start:],
-        response_logprobs=logprobs[response_start:],
-        reward_score=float(trajectory["reward"]),
-        num_turns=0,
-        metrics=AgentLoopMetrics(),
-    )
-
-
-async def _post_run(url: str, request: dict[str, Any]) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=None)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, json=request) as response:
-            response.raise_for_status()
-            return await response.json()
-
-
 class NemoGymAgentLoop(AgentLoopBase):
     """Delegate an entire text trajectory to a NeMo Gym agent server."""
 
-    def __init__(self, *args, gym_url: str, request_key: str = "nemo_gym_run_request", **kwargs):
+    def __init__(self, *args, gym_url: str, **kwargs):
         super().__init__(*args, **kwargs)
         self.gym_run_url = f"{gym_url.rstrip('/')}/run"
-        self.request_key = request_key
+
+    async def _post_run(self, request: dict[str, Any]) -> dict[str, Any]:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None)) as session:
+            async with session.post(self.gym_run_url, json=request) as response:
+                response.raise_for_status()
+                return await response.json()
 
     async def run(self, sampling_params: dict[str, Any], priority: int = 0, **kwargs) -> AgentLoopOutput:
         del priority
-        request = deepcopy(kwargs.get(self.request_key, {}))
-        responses_create_params = request.setdefault("responses_create_params", {})
+        request = dict(kwargs.get("nemo_gym_run_request", {}))
+        responses_create_params = dict(request.get("responses_create_params", {}))
         responses_create_params["input"] = kwargs["raw_prompt"]
-        for source, target in (
-            ("temperature", "temperature"),
-            ("top_p", "top_p"),
-        ):
-            if source in sampling_params:
-                responses_create_params.setdefault(target, sampling_params[source])
+        for key in ("temperature", "top_p"):
+            if key in sampling_params:
+                responses_create_params.setdefault(key, sampling_params[key])
+        request["responses_create_params"] = responses_create_params
 
-        result = await _post_run(self.gym_run_url, request)
-        trajectory = result.get("trajectory")
-        if trajectory is None:
-            raise ValueError("NeMo Gym /run response did not include trajectory")
-        return trajectory_to_agent_output(trajectory)
+        result = await self._post_run(request)
+        trajectory = result["trajectory"]
+        response_start = trajectory["loss_mask"].index(1)
+        return AgentLoopOutput(
+            prompt_ids=trajectory["input_ids"][:response_start],
+            response_ids=trajectory["input_ids"][response_start:],
+            response_mask=trajectory["loss_mask"][response_start:],
+            response_logprobs=trajectory["logprobs"][response_start:],
+            reward_score=trajectory["reward"],
+            num_turns=0,
+            metrics=AgentLoopMetrics(),
+        )
