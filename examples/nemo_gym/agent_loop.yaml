@@ -1,0 +1,4 @@
+- name: nemo_gym
+  _target_: verl.experimental.agent_loop.nemo_gym_agent_loop.NemoGymAgentLoop
+  gym_url: ${oc.env:NEMO_GYM_URL}
+  request_key: nemo_gym_run_request
