@@ -13,7 +13,9 @@
 # limitations under the License.
 """NeMo Gym agent loop backed by Gym's token-aligned ``/run`` result."""
 
+import json
 from typing import Any
+from uuid import uuid4
 
 import aiohttp
 
@@ -41,9 +43,25 @@ class NemoGymAgentLoop(AgentLoopBase):
         for key in ("temperature", "top_p"):
             if key in sampling_params:
                 responses_create_params.setdefault(key, sampling_params[key])
+        metadata = dict(responses_create_params.get("metadata") or {})
+        extra_body = metadata.get("extra_body") or {}
+        if isinstance(extra_body, str):
+            extra_body = json.loads(extra_body)
+        metadata["extra_body"] = extra_body | {
+            "logprobs": True,
+            "return_token_ids": True,
+            "return_tokens_as_token_ids": True,
+        }
+        responses_create_params["metadata"] = metadata
+        responses_create_params["top_logprobs"] = 0
         request["responses_create_params"] = responses_create_params
 
-        result = await self._post_run(request)
+        policy_address, _ = await self.server_manager._acquire_server(uuid4().hex)
+        request["policy_base_url"] = f"http://{policy_address}/v1"
+        try:
+            result = await self._post_run(request)
+        finally:
+            self.server_manager._release_server(policy_address)
         trajectory = result["trajectory"]
         response_start = trajectory["loss_mask"].index(1)
         return AgentLoopOutput(

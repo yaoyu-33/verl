@@ -30,12 +30,21 @@ def _trajectory():
 async def test_agent_loop_calls_gym_run(monkeypatch):
     captured = {}
 
+    class FakeServerManager:
+        async def _acquire_server(self, request_id):
+            captured["request_id"] = request_id
+            return "policy:9000", object()
+
+        def _release_server(self, address):
+            captured["released"] = address
+
     async def fake_post_run(request):
-        captured.update(request)
+        captured["request"] = request
         return {"trajectory": _trajectory()}
 
     loop = object.__new__(nemo_gym_agent_loop.NemoGymAgentLoop)
     loop.gym_run_url = "http://gym:8000/run"
+    loop.server_manager = FakeServerManager()
     monkeypatch.setattr(loop, "_post_run", fake_post_run)
 
     output = await loop.run(
@@ -44,14 +53,25 @@ async def test_agent_loop_calls_gym_run(monkeypatch):
         nemo_gym_run_request={"verifier_metadata": {"answer": "42"}},
     )
 
-    assert captured == {
+    assert captured["request"] == {
         "verifier_metadata": {"answer": "42"},
+        "policy_base_url": "http://policy:9000/v1",
         "responses_create_params": {
             "input": [{"role": "user", "content": "solve"}],
+            "metadata": {
+                "extra_body": {
+                    "logprobs": True,
+                    "return_token_ids": True,
+                    "return_tokens_as_token_ids": True,
+                }
+            },
             "temperature": 0.7,
+            "top_logprobs": 0,
             "top_p": 0.9,
         },
     }
+    assert captured["request_id"]
+    assert captured["released"] == "policy:9000"
     assert output.prompt_ids == [10, 11]
     assert output.response_ids == [12, 13, 14]
     assert output.response_mask == [1, 0, 1]
