@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+
 import pytest
 
 from verl.experimental.agent_loop import nemo_gym_agent_loop
@@ -30,10 +32,17 @@ def _trajectory():
 async def test_agent_loop_calls_gym_run(monkeypatch):
     captured = {}
 
+    class FakeRemoteMethod:
+        async def remote(self):
+            return 7
+
+    class FakePolicyServer:
+        get_global_steps = FakeRemoteMethod()
+
     class FakeServerManager:
         async def _acquire_server(self, request_id):
             captured["request_id"] = request_id
-            return "policy:9000", object()
+            return "policy:9000", FakePolicyServer()
 
         def _release_server(self, address):
             captured["released"] = address
@@ -45,6 +54,7 @@ async def test_agent_loop_calls_gym_run(monkeypatch):
     loop = object.__new__(nemo_gym_agent_loop.NemoGymAgentLoop)
     loop.gym_run_url = "http://gym:8000/run"
     loop.server_manager = FakeServerManager()
+    loop.rollout_config = SimpleNamespace(response_length=256)
     monkeypatch.setattr(loop, "_post_run", fake_post_run)
 
     output = await loop.run(
@@ -58,12 +68,9 @@ async def test_agent_loop_calls_gym_run(monkeypatch):
         "policy_base_url": "http://policy:9000/v1",
         "responses_create_params": {
             "input": [{"role": "user", "content": "solve"}],
+            "max_output_tokens": 256,
             "metadata": {
-                "extra_body": {
-                    "logprobs": True,
-                    "return_token_ids": True,
-                    "return_tokens_as_token_ids": True,
-                }
+                "extra_body": ('{"logprobs": true, "return_token_ids": true, "return_tokens_as_token_ids": true}')
             },
             "temperature": 0.7,
             "top_logprobs": 0,
@@ -77,3 +84,4 @@ async def test_agent_loop_calls_gym_run(monkeypatch):
     assert output.response_mask == [1, 0, 1]
     assert output.response_logprobs == [-0.1, 0.0, -0.2]
     assert output.reward_score == 0.75
+    assert output.extra_fields == {"min_global_steps": 7, "max_global_steps": 7}

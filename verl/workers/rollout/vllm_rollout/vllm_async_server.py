@@ -890,6 +890,10 @@ class vLLMHttpServer:
         """Set the global steps of the model weights."""
         self.global_steps = global_steps
 
+    async def get_global_steps(self) -> int | None:
+        """Return the model-weight version currently served by this replica."""
+        return self.global_steps
+
     async def wait_for_requests_to_drain(self):
         await self.engine.wait_for_requests_to_drain()
 
